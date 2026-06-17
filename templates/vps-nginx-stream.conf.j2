@@ -1,0 +1,78 @@
+# VeryPowerful — VPS L4 SNI Stream Proxy
+# Reads SNI from TLS ClientHello (no decryption), forwards raw TCP
+# to the right home node through the WireGuard tunnel.
+
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+stream {
+    # Per-domain usage tracking
+    log_format metrics '$ssl_preread_server_name $bytes_sent $bytes_received '
+                       '$session_time $time_iso8601 $remote_addr';
+    access_log /var/log/nginx/stream-access.log metrics buffer=64k flush=30s;
+
+    # SNI hostname → WireGuard tunnel IP:port
+    map $ssl_preread_server_name $backend {
+{% for node in nodes %}
+{% for sub in node.subdomains | default([node.domain]) %}
+        {{ sub }}.{{ node.domain }}      {{ node.wg_ip }}:443;
+{% endfor %}
+        default                           127.0.0.1:9443;
+    }
+
+{% endfor %}
+    map $ssl_preread_server_name $backend_8448 {
+{% for node in nodes %}
+{% if node.matrix_federation %}
+        {{ node.matrix_server_name | default('chat.' ~ node.domain) }}     {{ node.wg_ip }}:8448;
+{% endif %}
+{% endfor %}
+        default                                                            127.0.0.1:9443;
+    }
+
+    server {
+        listen 443;
+        proxy_pass $backend;
+        ssl_preread on;
+        proxy_connect_timeout 10s;
+        proxy_timeout 3600s;
+    }
+
+    server {
+        listen 80;
+        proxy_pass 10.0.0.2:80;
+        proxy_connect_timeout 10s;
+        proxy_timeout 60s;
+    }
+
+    server {
+        listen 8448;
+        proxy_pass $backend_8448;
+        ssl_preread on;
+        proxy_connect_timeout 10s;
+        proxy_timeout 3600s;
+    }
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    server {
+        listen 127.0.0.1:9443 ssl;
+        ssl_certificate     /etc/nginx/certs/fallback.crt;
+        ssl_certificate_key /etc/nginx/certs/fallback.key;
+        ssl_reject_handshake on;
+    }
+
+    server {
+        listen 127.0.0.1:8080;
+        location /health { return 200 "ok\n"; add_header Content-Type text/plain; }
+    }
+}

@@ -1,0 +1,91 @@
+# VeryPowerful — Home Node Caddyfile
+# TLS termination for all domains. Traffic arrives through WG tunnel.
+
+{
+    email {{ letsencrypt_email | default(admin_email) }}
+}
+
+:80 {
+    bind {{ node.wg_ip }}
+    redir https://{host}{uri} permanent
+}
+
+{% for domain in node.domains %}
+{{ domain }}{% if not loop.last %},{% endif %}
+{% endfor %} {
+    bind {{ node.wg_ip }}
+
+    tls {
+        {% if node.tls_issuer == 'internal' %}
+        issuer internal
+        {% endif %}
+    }
+
+    {% if node.services.matrix is defined and node.services.matrix %}
+    @matrix {
+        host {{ node.services.matrix.host | default('chat.' ~ node.domain) }}
+        path /_matrix/* /_synapse/*
+    }
+    handle @matrix {
+        reverse_proxy matrix:8008
+    }
+    {% endif %}
+
+    {% if node.services.element is defined and node.services.element %}
+    @element {
+        host {{ node.services.element.host | default('chat.' ~ node.domain) }}
+        not path /_matrix/* /_synapse/*
+    }
+    handle @element {
+        reverse_proxy element:80
+    }
+    {% endif %}
+
+    {% if node.services.jitsi is defined and node.services.jitsi %}
+    @jitsi {
+        host {{ node.services.jitsi.host | default('meet.' ~ node.domain) }}
+    }
+    handle @jitsi {
+        reverse_proxy jitsi-web:80
+    }
+    @jitsi-ws {
+        host {{ node.services.jitsi.host | default('meet.' ~ node.domain) }}
+        path /xmpp-websocket
+    }
+    handle @jitsi-ws {
+        reverse_proxy prosody:5280
+    }
+    {% endif %}
+
+    {% if node.services.authentik is defined and node.services.authentik %}
+    @authentik {
+        host {{ node.services.authentik.host | default('auth.' ~ node.domain) }}
+    }
+    handle @authentik {
+        reverse_proxy authentik-server:9000
+    }
+    {% endif %}
+
+    {% if node.services.api is defined and node.services.api %}
+    @api {
+        host {{ node.services.api.host | default('api.' ~ node.domain) }}
+    }
+    handle @api {
+        reverse_proxy api:5000
+    }
+    {% endif %}
+
+    handle {
+        respond "VeryPowerful node — {{ node.name | default('unnamed') }} online" 200
+    }
+}
+
+{% if node.services.matrix is defined and node.services.matrix %}
+{{ node.services.matrix.host | default('chat.' ~ node.domain) }}:8448 {
+    bind {{ node.wg_ip }}
+    tls {
+        {% if node.tls_issuer == 'internal' %}issuer internal{% endif %}
+    }
+    reverse_proxy matrix:8008
+}
+{% endif %}

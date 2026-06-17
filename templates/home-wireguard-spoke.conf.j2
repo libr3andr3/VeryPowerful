@@ -1,0 +1,14 @@
+# VeryPowerful — Home Node WireGuard Spoke
+# Connects to the VPS hub so ingress traffic reaches this node.
+
+[Interface]
+PrivateKey = {{ secrets.home_wg_private_key }}
+Address    = {{ node.wg_ip }}/24
+MTU        = {{ node.wg_mtu | default(1420) }}
+
+[Peer]
+# The VPS hub
+PublicKey           = {{ vps.wg_public_key }}
+Endpoint            = {{ vps.public_ip }}:{{ vps.wg_port | default(51820) }}
+AllowedIPs          = 10.0.0.0/24
+PersistentKeepalive = {{ node.keepalive | default(25) }}

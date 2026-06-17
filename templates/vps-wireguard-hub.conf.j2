@@ -1,0 +1,28 @@
+# VeryPowerful — VPS WireGuard Hub
+# Public VPS that accepts spokes from home nodes behind NAT.
+# Nginx stream proxy uses these tunnel IPs to forward TLS.
+
+[Interface]
+PrivateKey = {{ secrets.vps_wg_private_key }}
+Address    = {{ vps.wg_ip | default('10.0.0.1') }}/24
+ListenPort = {{ vps.wg_port | default(51820) }}
+MTU        = {{ vps.wg_mtu | default(1420) }}
+
+# Enable IP forwarding so nginx can open connections to spoke IPs
+PostUp = sysctl -w net.ipv4.ip_forward=1
+
+# Allow forwarded traffic through the tunnel
+PostUp = nft add rule ip filter FORWARD iifname %i accept 2>/dev/null || iptables -I FORWARD -i %i -j ACCEPT
+PostDown = nft delete rule ip filter FORWARD iifname %i accept 2>/dev/null || iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true
+
+{% for node in nodes %}
+# ------------------------------------------------------------------
+# {{ node.name | default('home-' ~ loop.index) }} ({{ node.domain }})
+# ------------------------------------------------------------------
+[Peer]
+PublicKey  = {{ node.public_key }}
+AllowedIPs = {{ node.wg_ip | default('10.0.0.' ~ (loop.index + 1)) }}/32
+{% if node.comment %}# {{ node.comment }}
+{% endif %}
+
+{% endfor %}
