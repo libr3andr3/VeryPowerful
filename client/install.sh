@@ -1,32 +1,18 @@
 #!/usr/bin/env bash
-# VeryPowerful — One-Command Install
+# VeryPowerful - One-Command Install
 # ===================================
-# Sets up a persistent WireGuard VPN tunnel to a VeryPowerful VPS,
-# giving your home lab a public ingress point. The VPS never sees
-# your plaintext — TLS terminates on your machine.
+# curl -fsSL https://yaya.sh/install.sh | bash
 #
-# Usage:
-#   curl -fsSL https://yaya.sh/install.sh | bash
-#
-# Or with explicit server info:
-#   VP_SERVER=103.89.12.145:9090 VP_API_KEY=*** VP_DOMAIN=my.lab.com bash install.sh
+# Interactive wizard that sets up a persistent WireGuard VPN tunnel
+# to a VeryPowerful VPS. The VPS never sees your plaintext.
 #
 # What this does:
-#   1. Detects your OS and installs wireguard-tools
-#   2. Generates a WireGuard keypair
-#   3. Registers your public key with the VeryPowerful VPS
-#   4. Configures WireGuard spoke
-#   5. Optionally installs/configures Caddy for TLS termination
-#   6. Starts the VPN tunnel
-#
-# Environment variables (all optional — script prompts interactively):
-#   VP_SERVER          VPS provision server host:port
-#   VP_API_KEY         API key for authentication
-#   VP_DOMAIN          Your domain name (for SNI routing)
-#   VP_HOSTNAME        Friendly name for your node
-#   VP_MATRIX          Set to "1" to enable Matrix federation
-#   VP_INSTALL_CADDY   Set to "1" to auto-install Caddy
-#   VP_NON_INTERACTIVE Set to "1" to skip prompts (needs VP_DOMAIN)
+#   1. Detects your OS, installs wireguard-tools
+#   2. Generates a WireGuard keypair (shows public key for copying)
+#   3. Asks for your VPS address, API key, and domain
+#   4. Registers with the VPS provisioning server
+#   5. Configures and starts the WireGuard tunnel
+#   6. Optionally installs Caddy for auto-TLS
 
 set -euo pipefail
 
@@ -34,31 +20,39 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[✓]${NC} $*"; }
-warn() { echo -e "${YELLOW}[!]${NC} $*"; }
-err()  { echo -e "${RED}[✗]${NC} $*"; }
-info() { echo -e "${BLUE}[i]${NC} $*"; }
-bold() { echo -e "${BOLD}$*${NC}"; }
+log()  { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $*"; }
+err()  { echo -e "  ${RED}✗${NC} $*"; }
+info() { echo -e "  ${BLUE}ℹ${NC} $*"; }
+step() { echo -e "\n${BOLD}${CYAN}━━━ $* ━━━${NC}\n"; }
+prompt() { echo -ne "  ${BOLD}→${NC} $1 "; }
+heading() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
 
-# ── Banner ─────────────────────────────────────────────────────────────────
-
+# ── Banner ──────────────────────────────────────────────────────────────────
+clear 2>/dev/null || true
 echo ""
-echo "  ╔══════════════════════════════════════════════╗"
-echo "  ║            VeryPowerful Installer            ║"
-echo "  ║    VPN ingress for your home lab, no hassle  ║"
-echo "  ╚══════════════════════════════════════════════╝"
+echo -e "  ${BOLD}${CYAN}╔══════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}${CYAN}║${NC}         ${BOLD}VeryPowerful${NC} - VPN Ingress           ${BOLD}${CYAN}║${NC}"
+echo -e "  ${BOLD}${CYAN}║${NC}     one command, your home lab goes live    ${BOLD}${CYAN}║${NC}"
+echo -e "  ${BOLD}${CYAN}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${DIM}The VPS is a dumb L4 pipe. TLS terminates on YOUR machine.${NC}"
+echo -e "  ${DIM}Nobody sees your plaintext. Ever.${NC}"
 echo ""
 
-# ── Detect OS ──────────────────────────────────────────────────────────────
+# ── Detect OS ───────────────────────────────────────────────────────────────
+
+step "Step 1 - Checking your system"
 
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         OS_ID="${ID}"
-        OS_VERSION="${VERSION_ID:-}"
         OS_FAMILY=""
         case "$OS_ID" in
             debian|ubuntu|linuxmint|pop|elementary|zorin) OS_FAMILY="debian" ;;
@@ -69,98 +63,73 @@ detect_os() {
             *) OS_FAMILY="unknown" ;;
         esac
     elif [[ "$(uname -s)" == "Darwin" ]]; then
-        OS_ID="macos"
-        OS_FAMILY="macos"
+        OS_ID="macos"; OS_FAMILY="macos"
     else
-        OS_ID="unknown"
-        OS_FAMILY="unknown"
+        OS_ID="unknown"; OS_FAMILY="unknown"
     fi
 }
 
 detect_os
-
-info "Detected OS: ${OS_ID} (${OS_FAMILY:-unknown})"
+info "Detected: ${BOLD}${OS_ID}${NC}"
 
 if [[ "$OS_FAMILY" == "macos" ]]; then
-    err "macOS is not currently supported for VeryPowerful home nodes."
-    err "macOS WireGuard works but runs in userland and lacks systemd."
-    err "Use a Linux server/VM instead, or install WireGuard manually."
+    err "macOS is not supported for VeryPowerful home nodes."
+    err "Use a Linux server or VM instead."
     exit 1
 fi
 
 if [[ "$OS_FAMILY" == "unknown" ]]; then
-    warn "Unrecognized OS. Will try generic Linux approach."
+    warn "Unrecognized OS - will try generic Linux approach."
 fi
 
-# ── Install WireGuard ──────────────────────────────────────────────────────
+# ── Install WireGuard ────────────────────────────────────────────────────────
 
 install_wireguard() {
-    info "Installing WireGuard..."
-
+    info "Installing wireguard-tools..."
     case "$OS_FAMILY" in
         debian)
             sudo apt-get update -qq
-            sudo apt-get install -y -qq wireguard-tools resolvconf curl
-            ;;
+            sudo apt-get install -y -qq wireguard-tools resolvconf curl ;;
         redhat)
-            sudo dnf install -y wireguard-tools curl
-            ;;
+            sudo dnf install -y wireguard-tools curl ;;
         arch)
-            sudo pacman -S --noconfirm wireguard-tools curl
-            ;;
+            sudo pacman -S --noconfirm wireguard-tools curl ;;
         alpine)
-            sudo apk add wireguard-tools curl
-            ;;
+            sudo apk add wireguard-tools curl ;;
         suse)
-            sudo zypper install -y wireguard-tools curl
-            ;;
+            sudo zypper install -y wireguard-tools curl ;;
         *)
-            warn "Could not auto-install WireGuard for your OS."
-            warn "Please install wireguard-tools and curl manually, then re-run."
-            warn "https://www.wireguard.com/install/"
-            exit 1
-            ;;
+            warn "Cannot auto-install WireGuard."
+            warn "Install wireguard-tools + curl manually: https://www.wireguard.com/install/"
+            exit 1 ;;
     esac
-
-    # Verify installation
-    if ! command -v wg &>/dev/null; then
-        err "WireGuard (wg) command not found after installation."
-        exit 1
-    fi
-    if ! command -v wg-quick &>/dev/null; then
-        err "wg-quick not found after installation."
-        exit 1
-    fi
-
-    log "WireGuard installed: $(wg --version 2>/dev/null || echo 'ok')"
 }
 
 if command -v wg &>/dev/null && command -v wg-quick &>/dev/null; then
-    log "WireGuard already installed: $(wg --version 2>/dev/null || echo 'ok')"
+    log "WireGuard already installed"
 else
     install_wireguard
+    log "WireGuard installed"
 fi
 
-# ── Check existing WireGuard interfaces ─────────────────────────────────────
+# ── Check for existing tunnel ────────────────────────────────────────────────
 
-EXISTING_CONFIG=""
-for iface in wg0 vp0; do
+for iface in wg0; do
     if wg show "$iface" &>/dev/null 2>&1; then
-        warn "WireGuard interface '$iface' already running."
-        warn "VeryPowerful uses wg0 by default. If you already have a wg0,"
-        warn "this script will NOT overwrite it. Use a different interface"
-        warn "or remove the existing one first: sudo wg-quick down $iface"
-        EXISTING_CONFIG="$iface"
+        warn "WireGuard interface '$iface' is already running."
+        warn "This script uses wg0. Remove the existing one first:"
+        warn "  sudo wg-quick down $iface"
+        if [[ -z "${VP_FORCE:-}" ]]; then
+            err "Set VP_FORCE=1 to overwrite, or clean up manually."
+            exit 1
+        fi
+        info "VP_FORCE set - will overwrite existing $iface"
     fi
 done
 
-if [[ -n "$EXISTING_CONFIG" ]] && [[ -z "${VP_FORCE:-}" ]]; then
-    err "Existing WireGuard interface found. Set VP_FORCE=1 to overwrite,"
-    err "or manually clean up first: sudo wg-quick down $EXISTING_CONFIG"
-    exit 1
-fi
+# ── Generate keys ────────────────────────────────────────────────────────────
 
-# ── Generate WireGuard keys ────────────────────────────────────────────────
+step "Step 2 - Generating your WireGuard keys"
 
 WG_DIR="${HOME}/.wireguard"
 mkdir -p "$WG_DIR"
@@ -169,76 +138,87 @@ chmod 700 "$WG_DIR"
 PRIVATE_KEY_FILE="${WG_DIR}/verypowerful.private"
 PUBLIC_KEY_FILE="${WG_DIR}/verypowerful.public"
 
-# Only generate if we don't already have keys
 if [[ ! -f "$PRIVATE_KEY_FILE" ]]; then
     umask 077
     wg genkey > "$PRIVATE_KEY_FILE"
     wg pubkey < "$PRIVATE_KEY_FILE" > "$PUBLIC_KEY_FILE"
-    log "Generated new WireGuard keypair"
+    log "New keypair generated"
 else
-    log "Using existing WireGuard keypair"
+    log "Using existing keypair"
 fi
 
 CLIENT_PRIVATE_KEY=$(cat "$PRIVATE_KEY_FILE")
 CLIENT_PUBLIC_KEY=$(cat "$PUBLIC_KEY_FILE")
 
-info "Your public key: ${CLIENT_PUBLIC_KEY:0:16}..."
+echo ""
+echo -e "  ${BOLD}Your WireGuard public key:${NC}"
+echo -e "  ${CYAN}┌────────────────────────────────────────────────────────────┐${NC}"
+echo -e "  ${CYAN}│${NC} ${BOLD}${GREEN}${CLIENT_PUBLIC_KEY}${NC} ${CYAN}│${NC}"
+echo -e "  ${CYAN}└────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+echo -e "  ${DIM}↑ Copy this key. You will need it to register with the VPS.${NC}"
+echo -e "  ${DIM}  Select the key with your mouse and press Ctrl+Shift+C${NC}"
+echo ""
 
-# ── Gather configuration ───────────────────────────────────────────────────
+# ── Gather connection info ──────────────────────────────────────────────────
 
-# Server endpoint
+step "Step 3 - Where is your VPS?"
+
+echo -e "  ${DIM}You need the address of the VeryPowerful VPS provision server.${NC}"
+echo -e "  ${DIM}Example: vps.example.com:9090  or  103.89.12.145:9090${NC}"
+echo ""
+
 if [[ -n "${VP_SERVER:-}" ]]; then
-    VP_SERVER="${VP_SERVER}"
+    SERVER="${VP_SERVER}"
+    info "Using VP_SERVER=${SERVER}"
 else
-    echo ""
-    info "Where is the VeryPowerful VPS provisioning server?"
-    info "Example: vps.example.com:9090"
-    read -r -p "  Server (host:port): " VP_SERVER
+    prompt "VPS server address (host:port):"
+    read -r SERVER
 fi
 
-# API Key (optional — server may allow open registration)
-if [[ -n "${VP_API_KEY:-}" ]]; then
-    API_KEY="${VP_API_KEY}"
-else
-    echo ""
-    info "API key (leave blank if the server allows open registration):"
-    read -r -s -p "  API Key: " API_KEY
-    echo ""
-fi
-
-# Domain
-if [[ -n "${VP_DOMAIN:-}" ]]; then
-    DOMAIN="${VP_DOMAIN}"
-else
-    echo ""
-    info "Your domain name (e.g., myhomelab.example.com)."
-    info "This is used for SNI routing — HTTPS traffic for this domain"
-    info "will be forwarded through the VPS to your machine."
-    info "Leave blank if you just want the VPN tunnel (no SNI routing)."
-    read -r -p "  Domain: " DOMAIN
-fi
-
-# Hostname
-if [[ -n "${VP_HOSTNAME:-}" ]]; then
-    HOSTNAME_NAME="${VP_HOSTNAME}"
-else
-    HOSTNAME_NAME=$(hostname 2>/dev/null || echo "unknown")
-fi
-
-# Matrix federation
-MATRIX_FED="${VP_MATRIX:-0}"
-
-# Non-interactive check
-if [[ "${VP_NON_INTERACTIVE:-0}" == "1" ]] && [[ -z "$DOMAIN" ]]; then
-    err "VP_NON_INTERACTIVE=1 requires VP_DOMAIN to be set."
+if [[ -z "$SERVER" ]]; then
+    err "Server address is required."
     exit 1
 fi
 
 echo ""
 
-# ── Register with VPS ──────────────────────────────────────────────────────
+step "Step 4 - API key (optional)"
 
-info "Registering with VeryPowerful VPS at ${VP_SERVER}..."
+echo -e "  ${DIM}If the VPS requires an API key, paste it here.${NC}"
+echo -e "  ${DIM}Leave blank if the server allows open registration.${NC}"
+echo ""
+
+if [[ -n "${VP_API_KEY:-}" ]]; then
+    API_KEY="${VP_AP...nfo "Using VP_API_KEY from environment"
+else
+    prompt "API key (hidden input):"
+    read -r -s API_KEY
+    echo ""
+fi
+
+echo ""
+
+step "Step 5 - Your domain (optional)"
+
+echo -e "  ${DIM}If you have a domain, the VPS will route HTTPS traffic to you.${NC}"
+echo -e "  ${DIM}Leave blank if you only need the VPN tunnel.${NC}"
+echo ""
+
+if [[ -n "${VP_DOMAIN:-}" ]]; then
+    DOMAIN="${VP_DOMAIN}"
+    info "Using VP_DOMAIN=${DOMAIN}"
+else
+    prompt "Your domain (e.g. myhomelab.com) or leave blank:"
+    read -r DOMAIN
+fi
+
+HOSTNAME_NAME="${VP_HOSTNAME:-$(hostname 2>/dev/null || echo 'unknown')}"
+MATRIX_FED="${VP_MATRIX:-0}"
+
+# ── Register with VPS ────────────────────────────────────────────────────────
+
+step "Step 6 - Registering with the VPS"
 
 REGISTER_BODY=$(cat <<EOF
 {
@@ -250,32 +230,26 @@ REGISTER_BODY=$(cat <<EOF
 EOF
 )
 
-# Build curl command
-CURL_CMD=(curl -fsSL --max-time 30 -X POST)
-if [[ -n "$API_KEY" ]]; then
-    CURL_CMD+=(-H "Authorization: Bearer ${API_KEY}")
+CURL_ARGS=(curl -fsSL --max-time 30 -X POST)
+if [[ -n "${API_KEY:-}" ]]; then
+    CURL_ARGS+=(-H "Authorization: Bearer ${API_KEY}
 fi
-CURL_CMD+=(-H "Content-Type: application/json" -d "$REGISTER_BODY")
-CURL_CMD+=("http://${VP_SERVER}/api/v1/register")
+CURL_ARGS+=(-H "Content-Type: application/json" -d "$REGISTER_BODY")
+CURL_ARGS+=("http://${SERVER}/api/v1/register")
 
-# Attempt registration
-REGISTER_OUTPUT=$("${CURL_CMD[@]}" 2>&1) || {
-    CURL_EXIT=$?
+info "Contacting ${SERVER}..."
+
+REGISTER_OUTPUT=$("${CURL_ARGS[@]}" 2>&1) || {
     echo ""
-    err "Registration failed (curl exit code: ${CURL_EXIT})"
-    err "Server: ${VP_SERVER}"
-    err "Response: ${REGISTER_OUTPUT}"
+    err "Could not reach the VPS provision server."
+    err "Server: ${SERVER}"
     echo ""
     warn "Troubleshooting:"
-    warn "  1. Is the VPS provision server running?"
-    warn "  2. Is the port accessible from your network?"
+    warn "  1. Is the VPS running? Try: curl http://${SERVER}/health"
+    warn "  2. Is the port open in the firewall?"
     warn "  3. Is the API key correct?"
-    warn "  4. Try: curl http://${VP_SERVER}/health"
     exit 1
 }
-
-# Parse response
-RESPONSE=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d, indent=2))" 2>/dev/null || echo "$REGISTER_OUTPUT")
 
 STATUS=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "parse_error")
 CLIENT_IP=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ip',''))" 2>/dev/null || echo "")
@@ -284,51 +258,39 @@ VPS_ENDPOINT=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; print(json
 VPS_PORT=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('vps_port','51820'))" 2>/dev/null || echo "51820")
 SNI_OK=$(echo "$REGISTER_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sni_configured','false'))" 2>/dev/null || echo "false")
 
-echo ""
-echo "$RESPONSE"
-echo ""
-
 if [[ "$STATUS" == "error" ]]; then
-    err "Registration failed."
+    err "Registration failed. Response:"
+    echo "$REGISTER_OUTPUT" | python3 -m json.tool 2>/dev/null || echo "$REGISTER_OUTPUT"
     exit 1
 fi
 
 if [[ "$STATUS" == "already_registered" ]]; then
-    log "This key is already registered with IP: ${CLIENT_IP}"
+    log "This key is already registered - reusing IP ${CLIENT_IP}"
+else
+    log "Registered! Your tunnel IP: ${BOLD}${CLIENT_IP}${NC}"
 fi
 
-if [[ "$STATUS" == "registered" ]] || [[ "$STATUS" == "already_registered" ]]; then
-    log "Registration successful!"
-    log "  Your WG IP   : ${CLIENT_IP}"
-    log "  VPS Endpoint : ${VPS_ENDPOINT}:${VPS_PORT}"
-    if [[ -n "$DOMAIN" ]]; then
-        if [[ "$SNI_OK" == "true" ]]; then
-            log "  SNI Route    : ${DOMAIN} → ${CLIENT_IP}:443"
-        else
-            warn "  SNI Route    : Failed to configure"
-            warn "  The VPS admin may need to add your domain manually."
-        fi
+log "VPS endpoint: ${BOLD}${VPS_ENDPOINT}:${VPS_PORT}${NC}"
+if [[ -n "$DOMAIN" ]]; then
+    if [[ "$SNI_OK" == "true" ]]; then
+        log "SNI route: ${BOLD}${DOMAIN}${NC} → ${CLIENT_IP}:443"
+    else
+        warn "SNI route setup failed - the VPS admin may need to add it manually."
     fi
 fi
 
-# ── Write WireGuard config ─────────────────────────────────────────────────
+# ── Write WireGuard config ───────────────────────────────────────────────────
 
-info "Writing WireGuard spoke config..."
+step "Step 7 - Configuring WireGuard"
 
 sudo mkdir -p /etc/wireguard
 
 WG_CONFIG="/etc/wireguard/wg0.conf"
 
-cat | sudo tee "$WG_CONFIG" > /dev/null <<EOF
-# VeryPowerful — Home Node WireGuard Spoke
-# Connects to ${VPS_ENDPOINT}:${VPS_PORT}
-# Your tunnel IP: ${CLIENT_IP}
-#
+sudo tee "$WG_CONFIG" > /dev/null <<EOF
+# VeryPowerful - Home Node WireGuard Spoke
+# VPS: ${VPS_ENDPOINT}:${VPS_PORT}  |  Your IP: ${CLIENT_IP}
 # Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-#
-# To stop:  sudo wg-quick down wg0
-# To start: sudo wg-quick up wg0
-# Status:   sudo wg show wg0
 
 [Interface]
 PrivateKey = ${CLIENT_PRIVATE_KEY}
@@ -336,7 +298,6 @@ Address    = ${CLIENT_IP}/24
 MTU        = 1420
 
 [Peer]
-# The VPS hub — never sees your plaintext, just forwards TCP
 PublicKey           = ${VPS_PUBKEY}
 Endpoint            = ${VPS_ENDPOINT}:${VPS_PORT}
 AllowedIPs          = 10.0.0.0/24
@@ -344,101 +305,87 @@ PersistentKeepalive = 25
 EOF
 
 sudo chmod 600 "$WG_CONFIG"
-log "Config written: ${WG_CONFIG}"
+log "Config written to /etc/wireguard/wg0.conf"
 
-# ── Start WireGuard ────────────────────────────────────────────────────────
+# ── Start WireGuard ──────────────────────────────────────────────────────────
 
-info "Starting WireGuard tunnel..."
+step "Step 8 - Starting the tunnel"
 
-# Check if wg0 already exists
 if wg show wg0 &>/dev/null 2>&1; then
-    warn "wg0 already running. Bringing down first..."
     sudo wg-quick down wg0 2>/dev/null || true
     sleep 1
 fi
 
 sudo wg-quick up wg0
 
-# Verify
 sleep 2
 if wg show wg0 &>/dev/null 2>&1; then
-    log "WireGuard tunnel established!"
-    wg show wg0 | grep -E "interface|peer|transfer|endpoint" || true
+    log "Tunnel established!"
 
-    # Test connectivity to VPS
-    VPS_TUNNEL_IP=$(echo "$VPS_ENDPOINT" | cut -d: -f1)
     VPS_WG_IP=$(echo "$CLIENT_IP" | awk -F. '{print $1"."$2"."$3".1"}')
     if ping -c 2 -W 3 "$VPS_WG_IP" &>/dev/null; then
-        log "Tunnel connectivity verified (ping ${VPS_WG_IP} OK)"
+        log "Connectivity verified - ping ${VPS_WG_IP} OK"
     else
-        warn "Tunnel up but ping to ${VPS_WG_IP} failed."
-        warn "This is normal if the VPS blocks ICMP. Check with:"
-        warn "  curl -v http://${VPS_WG_IP}:80"
+        warn "Tunnel up but ping to ${VPS_WG_IP} failed (ICMP may be blocked)."
     fi
 else
-    err "WireGuard tunnel failed to start."
-    err "Check: sudo journalctl -u wg-quick@wg0 --no-pager -n 30"
+    err "Tunnel failed to start."
+    err "Check: sudo journalctl -u wg-quick@wg0 --no-pager -n 20"
     exit 1
 fi
 
-# Enable on boot
 sudo systemctl enable wg-quick@wg0 2>/dev/null || \
-    warn "Could not enable wg-quick@wg0 on boot (non-systemd system?)"
+    warn "Could not enable on-boot (non-systemd system?)"
 
-# ── Optional: Caddy TLS Termination ────────────────────────────────────────
+# ── Optional Caddy ────────────────────────────────────────────────────────────
 
 INSTALL_CADDY="${VP_INSTALL_CADDY:-}"
 
 if [[ -z "$INSTALL_CADDY" ]] && [[ -n "$DOMAIN" ]]; then
     echo ""
-    info "Would you like to install Caddy for automatic TLS termination?"
-    info "Caddy will obtain Let's Encrypt certificates for your domain"
-    info "and serve HTTPS. Traffic arrives through the WireGuard tunnel."
-    info "Install Caddy? [Y/n]"
-    read -r INSTALL_CADDY_ANSWER
-    INSTALL_CADDY=$("${INSTALL_CADDY_ANSWER,,}" == "n" || "${INSTALL_CADDY_ANSWER,,}" == "no" ]] && echo "no" || echo "yes")
+    step "Optional - Install Caddy for auto-TLS?"
+    echo -e "  ${DIM}Caddy will get Let's Encrypt certs for ${DOMAIN}.${NC}"
+    echo -e "  ${DIM}It serves HTTPS. Traffic arrives through the WG tunnel.${NC}"
+    echo ""
+    prompt "Install Caddy? [Y/n]:"
+    read -r CADDY_ANSWER
+    INSTALL_CADDY=$( "${CADDY_ANSWER,,}" == "n" || "${CADDY_ANSWER,,}" == "no" ]] && echo "no" || echo "yes")
 fi
 
 if [[ "${INSTALL_CADDY,,}" == "yes" || "${INSTALL_CADDY,,}" == "y" || "${INSTALL_CADDY:-}" == "1" ]]; then
     install_caddy
 fi
 
-# ── Final summary ──────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "══════════════════════════════════════════════════════════════════"
-echo "  VeryPowerful — Connected!"
-echo "══════════════════════════════════════════════════════════════════"
+echo -e "  ${BOLD}${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}${GREEN}║${NC}           ${BOLD}VeryPowerful - Connected!${NC}            ${BOLD}${GREEN}║${NC}"
+echo -e "  ${BOLD}${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "  Your WG IP:     ${CLIENT_IP}"
+echo -e "  Your WG IP:     ${BOLD}${CLIENT_IP}${NC}"
 if [[ -n "$DOMAIN" ]]; then
-echo "  Your domain:    ${DOMAIN}"
+echo -e "  Your domain:    ${BOLD}${DOMAIN}${NC}"
 fi
-echo "  VPS endpoint:   ${VPS_ENDPOINT}:${VPS_PORT}"
+echo -e "  VPS endpoint:   ${VPS_ENDPOINT}:${VPS_PORT}"
 echo ""
-echo "  Useful commands:"
-echo "    sudo wg show wg0              — tunnel status"
-echo "    sudo wg-quick down wg0        — stop tunnel"
-echo "    sudo wg-quick up wg0          — start tunnel"
-echo "    ping ${CLIENT_IP%/*}.1        — ping VPS through tunnel"
+echo -e "  ${DIM}Commands:${NC}"
+echo -e "  ${DIM}  sudo wg show wg0          - tunnel status${NC}"
+echo -e "  ${DIM}  sudo wg-quick down wg0    - stop${NC}"
+echo -e "  ${DIM}  sudo wg-quick up wg0      - start${NC}"
 echo ""
 if [[ -n "$DOMAIN" ]]; then
-echo "  Next steps:"
-echo "    1. Point DNS A record for ${DOMAIN} → ${VPS_ENDPOINT}"
-echo "    2. Run your services, binding to ${CLIENT_IP%/*} (your WG IP)"
-echo "    3. (Caddy) TLS will automatically provision via Let's Encrypt"
+echo -e "  ${DIM}Next: point DNS A record for ${DOMAIN} → ${VPS_ENDPOINT}${NC}"
 fi
-echo ""
-echo "  ⚡ Your home lab has a public ingress point. Go build!"
-echo "══════════════════════════════════════════════════════════════════"
+echo -e "  ${BOLD}${GREEN}⚡ Your home lab has a public face. Go build.${NC}"
 echo ""
 
 exit 0
 
-# ── Caddy installation function ────────────────────────────────────────────
+# ── Caddy install ─────────────────────────────────────────────────────────────
 
 install_caddy() {
-    info "Installing Caddy web server with automatic TLS..."
+    step "Installing Caddy"
 
     case "$OS_FAMILY" in
         debian)
@@ -448,43 +395,27 @@ install_caddy() {
             curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | \
                 sudo tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null
             sudo apt-get update -qq
-            sudo apt-get install -y -qq caddy
-            ;;
+            sudo apt-get install -y -qq caddy ;;
         redhat)
             sudo dnf install -y 'dnf-command(copr)'
             sudo dnf copr enable -y @caddy/caddy
-            sudo dnf install -y caddy
-            ;;
+            sudo dnf install -y caddy ;;
         arch)
-            sudo pacman -S --noconfirm caddy
-            ;;
+            sudo pacman -S --noconfirm caddy ;;
         *)
-            warn "Auto Caddy install not supported for this OS."
-            warn "Install manually: https://caddyserver.com/docs/install"
-            return
-            ;;
+            warn "Cannot auto-install Caddy. Install manually: https://caddyserver.com/docs/install"
+            return ;;
     esac
 
     CLIENT_IP_CLEAN="${CLIENT_IP%/*}"
-
-    # Write Caddyfile
-    sudo mkdir -p /etc/caddy
-
-    # Get email for Let's Encrypt
     CADDY_EMAIL="${VP_CADDY_EMAIL:-}"
     if [[ -z "$CADDY_EMAIL" ]]; then
-        echo ""
-        read -r -p "  Email for Let's Encrypt notifications: " CADDY_EMAIL
+        prompt "Email for Let's Encrypt notifications:"
+        read -r CADDY_EMAIL
     fi
 
-    if [[ -z "$DOMAIN" ]]; then
-        warn "No domain set — Caddy will only serve on the WG IP."
-    fi
-
-    cat | sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
-# VeryPowerful — Caddy TLS Termination
-# Binds to WireGuard tunnel IP only. TLS terminates here.
-# The VPS never sees your plaintext.
+    sudo mkdir -p /etc/caddy
+    sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
 {
     email ${CADDY_EMAIL:-admin@localhost}
 }
@@ -494,52 +425,21 @@ install_caddy() {
     redir https://{host}{uri} permanent
 }
 
-${DOMAIN:-home.example.com} {
+${DOMAIN:-example.com} {
     bind ${CLIENT_IP_CLEAN}
 
-    tls {
-        # Remove 'issuer internal' for production Let's Encrypt certs
-        # issuer internal
-    }
-
     handle {
-        respond "VeryPowerful node — TLS OK" 200
-    }
-
-    # ── Add your services here ──────────────────────────────────────
-    # Example: reverse proxy to a local Docker container
-    #
-    # @app {
-    #     host app.${DOMAIN:-home.example.com}
-    # }
-    # handle @app {
-    #     reverse_proxy localhost:3000
-    # }
-    #
-    # See: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
-}
-
-# Matrix federation port (if needed)
-${DOMAIN:-home.example.com}:8448 {
-    bind ${CLIENT_IP_CLEAN}
-    handle {
-        respond "Matrix federation — TLS OK" 200
+        respond "VeryPowerful node - TLS OK" 200
     }
 }
 EOF
 
-    # Start Caddy
     sudo systemctl enable caddy
     sudo systemctl restart caddy
 
     if systemctl is-active --quiet caddy; then
-        log "Caddy installed and running."
-        log "Caddyfile: /etc/caddy/Caddyfile"
-        log "Edit Caddyfile to add your services, then: sudo systemctl reload caddy"
+        log "Caddy running. Edit /etc/caddy/Caddyfile to add your services."
     else
-        warn "Caddy installed but failed to start."
-        warn "Check: sudo journalctl -u caddy --no-pager -n 20"
-        warn "Caddyfile written to /etc/caddy/Caddyfile — fix it, then:"
-        warn "  sudo systemctl restart caddy"
+        warn "Caddy installed but failed to start. Check: sudo journalctl -u caddy -n 20"
     fi
 }
