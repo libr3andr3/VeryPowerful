@@ -1,0 +1,8 @@
+{
+    "name": "jitsi",
+    "description": "Jitsi Meet — open-source video conferencing",
+    "deploy_type": "docker",
+    "port": 8200,
+    "notes": "JVB needs UDP port 10000 reachable for P2P media. If behind NAT, media falls back to TURN. First start takes 30-60 seconds.",
+    "homepage": "https://jitsi.org"
+}

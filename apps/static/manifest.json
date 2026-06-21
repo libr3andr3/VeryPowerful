@@ -1,0 +1,8 @@
+{
+    "name": "static",
+    "description": "Static SPA or website — served directly by Caddy (no Docker container)",
+    "deploy_type": "static",
+    "static_dir": "/srv/www/{{DOMAIN}}",
+    "notes": "Place your files in the www directory on the home server.",
+    "static_url": ""
+}

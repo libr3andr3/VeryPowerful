@@ -1,0 +1,9 @@
+{
+    "name": "frappe-lms",
+    "description": "Frappe LMS — open-source learning management system",
+    "deploy_type": "docker",
+    "port": 8100,
+    "notes": "First startup takes 2-5 minutes. Admin: administrator / password in docker logs.",
+    "homepage": "https://frappelms.com",
+    "image": "frappe/erpnext:v16"
+}

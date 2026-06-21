@@ -1,0 +1,8 @@
+{
+    "name": "matrix",
+    "description": "Matrix Synapse homeserver — federated messaging",
+    "deploy_type": "docker",
+    "port": 8008,
+    "notes": "After deploy, run: docker compose run --rm synapse generate; docker compose up -d. Admin: register first user via API.",
+    "homepage": "https://matrix.org"
+}
