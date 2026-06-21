@@ -43,6 +43,7 @@ No accounts. No API keys. No cloud services. Just WireGuard keys and copy-paste.
 - nginx L4 SNI stream proxy — routes by domain without decrypting
 - Caddy auto-TLS with Let's Encrypt on your machine
 - Multi-port: HTTPS (443), HTTP (80 for ACME), Matrix federation (8448)
+- Optional egress proxy — route your outbound traffic through the VPS IP
 - Per-domain transfer metrics (optional)
 
 ## How it works
@@ -61,6 +62,27 @@ Your machine (behind NAT)
   Caddy terminates TLS with Let's Encrypt cert
   serves your apps, your data, your rules
 ```
+
+## Egress proxy (optional)
+
+The VPS can also act as an outbound HTTP/HTTPS forward proxy via tinyproxy.
+When enabled, peers route their API calls and web requests through the VPS,
+so all outbound traffic appears to come from your VPS IP.
+
+```
+Any API (OpenAI, Anthropic, etc.)
+  │
+  ▼
+VPS (tinyproxy on WireGuard IP)
+  forwards request, returns response
+  │
+  ▼ WireGuard encrypted tunnel
+Your machine
+  HTTP_PROXY=http://10.0.0.1:8888
+  HTTPS_PROXY=http://10.0.0.1:8888
+```
+
+Both the server setup and client install scripts offer this interactively.
 
 ## Contributing
 

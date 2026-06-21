@@ -130,6 +130,59 @@ else
 fi
 sudo systemctl enable wg-quick@wg0 2>/dev/null || true
 
+# ── Optional: Egress proxy through VPS ─────────────────────────────
+echo ""
+hdr "Optional — Route outbound traffic through VPS"
+echo -e "  ${D}If the VPS has tinyproxy installed, you can route${N}"
+echo -e "  ${D}your outbound HTTP/HTTPS traffic through the VPS.${N}"
+echo -e "  ${D}All API calls will appear to come from the VPS IP.${N}"
+echo ""
+read -r -p "  Use VPS egress proxy? [y/N]: " USE_PROXY
+
+if [ "${USE_PROXY,,}" = "y" ] || [ "${USE_PROXY,,}" = "yes" ]; then
+    PROXY_PORT="${VP_PROXY_PORT:-8888}"
+    PROXY_URL="http://10.0.0.1:${PROXY_PORT}"
+
+    echo ""
+    echo -e "  ${W}Proxy URL: ${C}${PROXY_URL}${N}"
+    echo ""
+    echo -e "  ${D}Add these to your services (Docker, systemd, shell):${N}"
+    echo -e "  ${W}  HTTP_PROXY=${PROXY_URL}${N}"
+    echo -e "  ${W}  HTTPS_PROXY=${PROXY_URL}${N}"
+    echo -e "  ${W}  NO_PROXY=localhost,127.0.0.1,10.0.0.0/24${N}"
+    echo ""
+
+    # Test the proxy
+    if command -v curl &>/dev/null; then
+        echo -e "  ${D}Testing proxy connection...${N}"
+        if HTTP_CODE=$(curl -x "$PROXY_URL" -s -o /dev/null -w '%{http_code}' --max-time 5 http://httpbin.org/ip 2>/dev/null); then
+            if [ "$HTTP_CODE" = "200" ]; then
+                IP=$(curl -x "$PROXY_URL" -s --max-time 5 http://httpbin.org/ip 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('origin','?'))" 2>/dev/null || echo "?")
+                ok "Proxy working — egress IP: ${IP}"
+            else
+                warn "Proxy returned HTTP ${HTTP_CODE} — check VPS setup"
+            fi
+        else
+            warn "Could not reach proxy at ${PROXY_URL} — is tinyproxy running on VPS?"
+        fi
+    fi
+
+    # Offer to set system-wide proxy
+    echo ""
+    read -r -p "  Set system-wide proxy in /etc/environment? [y/N]: " SET_SYSTEM
+    if [ "${SET_SYSTEM,,}" = "y" ] || [ "${SET_SYSTEM,,}" = "yes" ]; then
+        sudo tee -a /etc/environment > /dev/null <<ENVEOF
+HTTP_PROXY=${PROXY_URL}
+HTTPS_PROXY=${PROXY_URL}
+NO_PROXY=localhost,127.0.0.1,10.0.0.0/24
+ENVEOF
+        ok "Proxy set in /etc/environment (applies on next login)"
+        echo -e "  ${Y}Run 'source /etc/environment' to apply now.${N}"
+    fi
+else
+    echo -e "  ${D}Skipping egress proxy.${N}"
+fi
+
 # ── Optional: Caddy for TLS ───────────────────────────────────────
 if [ -n "$DOMAIN" ]; then
     echo ""

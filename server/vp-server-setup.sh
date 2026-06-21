@@ -202,6 +202,52 @@ else
     echo -e "  ${Y}Ensure ports are open: ${WG_PORT}/udp, 80/tcp, 443/tcp, 8448/tcp${N}"
 fi
 
+# ── Optional: Egress proxy (tinyproxy) ────────────────────────────
+echo ""
+hdr "Optional — Egress proxy for peers"
+echo -e "  ${D}Install a forward proxy so peers can route outbound traffic${N}"
+echo -e "  ${D}(API calls, web requests) through this VPS.${N}"
+echo -e "  ${D}Useful when peers want their traffic to exit from this IP.${N}"
+echo ""
+read -r -p "  Install tinyproxy egress proxy? [y/N]: " DO_PROXY
+
+if [ "${DO_PROXY,,}" = "y" ] || [ "${DO_PROXY,,}" = "yes" ]; then
+    PROXY_PORT="${VP_PROXY_PORT:-8888}"
+
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y -qq tinyproxy
+    elif command -v dnf &>/dev/null; then
+        dnf install -y tinyproxy
+    else
+        warn "Unknown package manager — install tinyproxy manually"
+    fi
+
+    if command -v tinyproxy &>/dev/null; then
+        # Backup original config
+        [ ! -f /etc/tinyproxy/tinyproxy.conf.bak ] && \
+            cp /etc/tinyproxy/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf.bak
+
+        # Listen on VPS WG IP only
+        sed -i "s/^#Listen .*/Listen ${VPS_IP}/; s/^Listen .*/Listen ${VPS_IP}/" /etc/tinyproxy/tinyproxy.conf
+
+        # Replace default Allow with WG subnet
+        sed -i '/^Allow 127.0.0.1/d; /^Allow ::1/d' /etc/tinyproxy/tinyproxy.conf
+        echo "Allow ${WG_SUBNET}" >> /etc/tinyproxy/tinyproxy.conf
+
+        # Set port
+        sed -i "s/^Port .*/Port ${PROXY_PORT}/" /etc/tinyproxy/tinyproxy.conf
+
+        systemctl enable tinyproxy && systemctl restart tinyproxy
+        ok "Egress proxy running on ${VPS_IP}:${PROXY_PORT}"
+        echo -e "  ${D}Peers set: HTTP_PROXY=http://${VPS_IP}:${PROXY_PORT}${N}"
+        echo -e "  ${D}           HTTPS_PROXY=http://${VPS_IP}:${PROXY_PORT}${N}"
+    else
+        warn "tinyproxy not found after install — skipping"
+    fi
+else
+    echo -e "  ${D}Skipping egress proxy.${N}"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${G}${W}VeryPowerful VPS is ready.${N}"
